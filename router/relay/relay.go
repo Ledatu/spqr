@@ -80,6 +80,11 @@ type ParseCacheEntry struct {
 	stmt lyx.Node
 }
 
+const (
+	parseCacheMaxEntries = 256
+	parseCacheMaxBytes   = 256 << 10
+)
+
 type RelayStateImpl struct {
 	routingDecisionPlan plan.Plan
 
@@ -106,8 +111,9 @@ type RelayStateImpl struct {
 	saveBindNamed   map[string]*pgproto3.Bind
 	savedPortalDesc map[string]*PortalDesc
 
-	parseCache map[string]ParseCacheEntry
-	savedRM    map[string]*rmeta.RoutingMetadataContext
+	parseCache      map[string]ParseCacheEntry
+	parseCacheBytes int
+	savedRM         map[string]*rmeta.RoutingMetadataContext
 
 	// buffer of messages to process on Sync request
 	xBuf []pgproto3.FrontendMessage
@@ -233,7 +239,7 @@ func (rst *RelayStateImpl) Reset() error {
 var ErrMatchShardError = fmt.Errorf("failed to match datashard")
 
 // TODO : unit tests
-func (rst *RelayStateImpl) initExecutor(p plan.Plan) error {
+func (rst *RelayStateImpl) initExecutor(p plan.Plan, deployTx bool) error {
 
 	switch q := p.(type) {
 	case *plan.VirtualPlan:
@@ -248,6 +254,10 @@ func (rst *RelayStateImpl) initExecutor(p plan.Plan) error {
 			Uint("client", rst.Client().ID()).
 			Msg("client encounter while initialing server connection")
 		return err
+	}
+
+	if !deployTx {
+		return nil
 	}
 
 	/* if transaction is explicitly requested, deploy */
@@ -1037,16 +1047,26 @@ func (rst *RelayStateImpl) Parse(query string, doCaching bool) (parser.ParseStat
 		/* only cache specific type of queries */
 		switch stmt.(type) {
 		case *lyx.Select, *lyx.Insert, *lyx.Update, *lyx.Delete:
-			rst.parseCache[query] = ParseCacheEntry{
+			rst.cacheParse(query, ParseCacheEntry{
 				ps:   state,
 				comm: comm,
 				stmt: stmt,
-			}
+			})
 		}
 	}
 
 	rst.plainQ = query
 	return state, comm, nil
+}
+
+// Clients that generate ever-new query texts (variable-length IN lists) would otherwise keep every parse tree until they disconnect.
+func (rst *RelayStateImpl) cacheParse(query string, entry ParseCacheEntry) {
+	if len(rst.parseCache) >= parseCacheMaxEntries || rst.parseCacheBytes+len(query) > parseCacheMaxBytes {
+		clear(rst.parseCache)
+		rst.parseCacheBytes = 0
+	}
+	rst.parseCache[query] = entry
+	rst.parseCacheBytes += len(query)
 }
 
 var _ RelayStateMgr = &RelayStateImpl{}
@@ -1099,7 +1119,7 @@ func (rst *RelayStateImpl) PrepareExecutionSlice(ctx context.Context, rm *rmeta.
 			return q, rst.expandRoutes(execTarg)
 		}
 
-		if err := rst.initExecutor(q); err != nil {
+		if err := rst.initExecutor(q, true); err != nil {
 			return nil, err
 		}
 
@@ -1147,7 +1167,7 @@ func (rst *RelayStateImpl) PrepareTargetDispatchExecutionSlice(bindPlan plan.Pla
 		rst.QueryExecutor().ActiveShardsReset()
 	}
 
-	err := rst.initExecutor(bindPlan)
+	err := rst.initExecutor(bindPlan, true)
 
 	switch err {
 	case nil:
@@ -1201,7 +1221,8 @@ func (rst *RelayStateImpl) PrepareRandomDispatchExecutionSlice(currentPlan plan.
 		return nil, noopCloseRouteFunc, err
 	}
 
-	err = rst.initExecutor(p)
+	/* This connection only parses and describes before fin() returns it; left inside BEGIN it would be discarded. */
+	err = rst.initExecutor(p, false)
 
 	switch err {
 	case nil:
