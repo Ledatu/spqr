@@ -590,6 +590,16 @@ func (s *DBPool) ForEach(cb func(sh shard.ShardHostCtl) error) error {
 // - error: An error if the shard is discarded or if there is an error putting the shard into the pool.
 //
 // TODO : unit tests
+// A backend connection keeps every statement it prepared, in the router and in its Postgres backend; recycling it bounds both.
+const (
+	maxPreparedStatementsPerConn     = 1000
+	maxPreparedStatementBytesPerConn = 2 << 20
+)
+
+type preparedStatementFootprinter interface {
+	PreparedStatementFootprint() (count int, queryBytes int)
+}
+
 func (s *DBPool) Put(sh shard.ShardHostInstance) error {
 	if sh.Sync() != 0 || sh.IsStale() {
 		spqrlog.Zero.Error().
@@ -604,6 +614,16 @@ func (s *DBPool) Put(sh shard.ShardHostInstance) error {
 			Str("txstatus", sh.TxStatus().String()).
 			Msg("discarding non-idle connection")
 		return s.pool.Discard(sh)
+	}
+	if f, ok := sh.(preparedStatementFootprinter); ok {
+		if count, queryBytes := f.PreparedStatementFootprint(); count > maxPreparedStatementsPerConn || queryBytes > maxPreparedStatementBytesPerConn {
+			spqrlog.Zero.Info().
+				Uint("shard", spqrlog.GetPointer(sh)).
+				Int("prepared", count).
+				Int("query-bytes", queryBytes).
+				Msg("recycling connection with too many prepared statements")
+			return s.pool.Discard(sh)
+		}
 	}
 	return s.pool.Put(sh)
 }

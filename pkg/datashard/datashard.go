@@ -43,8 +43,9 @@ type Conn struct {
 
 	status txstatus.TXStatus
 
-	stmtDef  map[uint64]*prepstatement.PreparedStatementDefinition
-	stmtDesc map[uint64]*prepstatement.PreparedStatementDescriptor
+	stmtDef        map[uint64]*prepstatement.PreparedStatementDefinition
+	stmtDesc       map[uint64]*prepstatement.PreparedStatementDescriptor
+	stmtQueryBytes int
 }
 
 // MarkStale implements shard.ShardHostInstance.
@@ -615,9 +616,20 @@ func (srv *Conn) StorePrepareStatement(hash uint64, shardId uint, def *prepstate
 	if shardId != id {
 		return spqrerror.Newf(spqrerror.SPQR_ROUTING_ERROR, "Cannot store stmt for shard \"%d\" in shard \"%d\"", shardId, id)
 	}
+	if prev, ok := srv.stmtDef[hash]; ok && prev != nil {
+		srv.stmtQueryBytes -= len(prev.Query)
+	}
 	srv.stmtDef[hash] = def
 	srv.stmtDesc[hash] = rd
+	if def != nil {
+		srv.stmtQueryBytes += len(def.Query)
+	}
 	return nil
+}
+
+// PreparedStatementFootprint reports how many statements this connection keeps prepared and the total size of their query texts.
+func (srv *Conn) PreparedStatementFootprint() (count int, queryBytes int) {
+	return len(srv.stmtDef), srv.stmtQueryBytes
 }
 
 // AuthRule returns the backend auth configuration of the Conn object.

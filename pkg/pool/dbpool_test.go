@@ -735,3 +735,46 @@ func TestBuildHostOrderNonExistentShard(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "shard with name \"non_existent_shard\" not found")
 }
+
+type footprintShard struct {
+	*mockshard.MockShardHostInstance
+	count      int
+	queryBytes int
+}
+
+func (f *footprintShard) PreparedStatementFootprint() (int, int) {
+	return f.count, f.queryBytes
+}
+
+func TestDbPoolPutRecyclesConnectionsWithManyPreparedStatements(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		count      int
+		queryBytes int
+		discard    bool
+	}{
+		{name: "small cache is pooled", count: 10, queryBytes: 4 << 10, discard: false},
+		{name: "too many statements", count: 1001, queryBytes: 64 << 10, discard: true},
+		{name: "too many query bytes", count: 20, queryBytes: 3 << 20, discard: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			underlyingPool := mockpool.NewMockShardHostsPool(ctrl)
+			dbpool := pool.NewDBPoolFromMultiPool(map[string]*config.Shard{}, &startup.StartupParams{}, underlyingPool, time.Hour)
+
+			sh := &footprintShard{MockShardHostInstance: mockshard.NewMockShardHostInstance(ctrl), count: tc.count, queryBytes: tc.queryBytes}
+			sh.EXPECT().Sync().AnyTimes().Return(int64(0))
+			sh.EXPECT().IsStale().AnyTimes().Return(false)
+			sh.EXPECT().TxStatus().AnyTimes().Return(txstatus.TXIDLE)
+			sh.EXPECT().ID().AnyTimes().Return(uint(1))
+
+			if tc.discard {
+				underlyingPool.EXPECT().Discard(sh).Return(nil)
+			} else {
+				underlyingPool.EXPECT().Put(sh).Return(nil)
+			}
+
+			assert.NoError(t, dbpool.Put(sh))
+		})
+	}
+}
