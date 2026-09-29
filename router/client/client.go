@@ -27,6 +27,7 @@ import (
 	"github.com/pg-sharding/spqr/pkg/spqrlog"
 	"github.com/pg-sharding/spqr/pkg/txstatus"
 	"github.com/pg-sharding/spqr/router/port"
+	"github.com/pg-sharding/spqr/router/rmeta"
 	"github.com/pg-sharding/spqr/router/route"
 	"github.com/pg-sharding/spqr/router/server"
 	"github.com/pg-sharding/spqr/router/statistics"
@@ -67,6 +68,8 @@ type RouterClient interface {
 
 type PsqlClient struct {
 	session.SessionParamsHolder
+
+	distributionCache *rmeta.DistributionCache
 	/* cancel */
 	csm *pgproto3.CancelRequest
 
@@ -169,6 +172,10 @@ func (r *PsqlClient) RecordStartTime(statType statistics.StatisticsType, t time.
 	}
 }
 
+func (cl *PsqlClient) RelationDistributionCache() *rmeta.DistributionCache {
+	return cl.distributionCache
+}
+
 func NewPsqlClient(pgconn conn.RawConn, pt port.RouterPortType, defaultRouteBehaviour string, showNoticeMessages bool, instanceDefaultTsa string) RouterClient {
 	var target_session_attrs string
 	if instanceDefaultTsa != "" {
@@ -193,6 +200,8 @@ func NewPsqlClient(pgconn conn.RawConn, pt port.RouterPortType, defaultRouteBeha
 		prepStmtsHash:       map[string]uint64{},
 
 		serverP: atomic.Pointer[server.Server]{},
+
+		distributionCache: rmeta.NewDistributionCache(),
 	}
 
 	cl.SetCommitStrategy(twopc.COMMIT_STRATEGY_BEST_EFFORT)

@@ -1,6 +1,8 @@
 package rmeta
 
 import (
+	"time"
+
 	"context"
 	"fmt"
 	"strconv"
@@ -200,12 +202,26 @@ func (rm *RoutingMetadataContext) GetRelationDistribution(ctx context.Context, r
 		return &CatalogDistribution, nil
 	}
 
+	var cache *DistributionCache
+	if holder, ok := rm.SPH.(DistributionCacheHolder); ok {
+		cache = holder.RelationDistributionCache()
+	}
+	if cache != nil {
+		if ds, ok := cache.get(*resolvedRelation, time.Now()); ok {
+			rm.Distributions[*resolvedRelation] = ds
+			return ds, nil
+		}
+	}
+
 	ds, err := rm.Mgr.GetRelationDistribution(ctx, resolvedRelation)
 
 	if err != nil {
 		return nil, err
 	}
 
+	if cache != nil {
+		cache.put(*resolvedRelation, ds)
+	}
 	rm.Distributions[*resolvedRelation] = ds
 	return ds, nil
 }

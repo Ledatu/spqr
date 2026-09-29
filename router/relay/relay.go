@@ -530,7 +530,7 @@ func (rst *RelayStateImpl) relayParsePrepared(ctx context.Context, currentMsg *p
 			switch rf := parsed.TableRef.(type) {
 			case *lyx.RangeVar:
 				qualName := rfqn.RelationFQNFromRangeRangeVar(rf)
-				if ds, err := rst.Qr.Mgr().GetRelationDistribution(ctx, qualName); err != nil {
+				if ds, err := rm.GetRelationDistribution(ctx, qualName); err != nil {
 					return err
 				} else if ds.Id == distributions.REPLICATED {
 					rel, err := rst.Qr.Mgr().GetReferenceRelation(ctx, qualName)
